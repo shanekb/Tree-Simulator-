@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+<title>Tree Simulator 3D – v4</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#03050a;color:#e8eef5;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;overflow:hidden;height:100vh;touch-action:none}
+  #canvas-container{position:absolute;inset:0}
+  canvas{display:block;width:100%;height:100%}
+  #ui{position:absolute;inset:0;pointer-events:none;display:flex;flex-direction:column}
+  #header{padding:10px 14px;background:linear-gradient(to bottom,rgba(3,5,10,.94),transparent);display:flex;justify-content:space-between;align-items:center}
+  #header h1{font-size:13px;font-weight:600;letter-spacing:.4px}
+  #status{font-size:11px;color:#94a3b8;text-align:right;line-height:1.35}
+  #info{position:absolute;top:44px;left:10px;background:rgba(3,5,10,.84);backdrop-filter:blur(16px);padding:9px 12px;border-radius:12px;font-size:11px;line-height:1.55;border:1px solid rgba(255,255,255,.05)}
+  .label{color:#64748b}.value{color:#e2e8f0;font-weight:500}.highlight{color:#4ade80;font-weight:600}
+  #controls{margin-top:auto;padding:10px 8px 16px;background:linear-gradient(to top,rgba(3,5,10,.97),transparent);display:flex;gap:6px;flex-wrap:wrap;pointer-events:auto}
+  button{flex:1;min-width:60px;padding:10px 4px;border:none;border-radius:10px;font-size:10.5px;font-weight:600;cursor:pointer}
+  button:active{transform:scale(.96)}
+  #hourBtn{background:#14b8a6;color:#042f2e}
+  #growBtn{background:#22c55e;color:#052e16}
+  #timelapseBtn{background:#3b82f6;color:#fff}
+  #weatherBtn{background:#64748b;color:#fff}
+  #intensityBtn{background:#0ea5e9;color:#fff}
+  #speciesBtn{background:#0d9488;color:#fff}
+  #speedBtn{background:#8b5cf6;color:#fff}
+  #speedBtn.active{background:#a78bfa;box-shadow:0 0 0 2px #c4b5fd}
+  #muteBtn{background:#475569;color:#fff;flex:.55}
+  #resetCamBtn{background:#334155;color:#e2e8f0;flex:.5}
+  #hint{position:absolute;bottom:78px;left:50%;transform:translateX(-50%);font-size:10px;color:rgba(255,255,255,.32)}
+</style>
+</head>
+<body>
+<div id="canvas-container"></div>
+<div id="ui">
+  <div id="header">
+    <h1>TREE SIMULATOR</h1>
+    <div id="status">Tap to enable audio</div>
+  </div>
+  <div id="info">
+    <div><span class="label">Day</span> <span class="highlight" id="dayLabel">1</span></div>
+    <div><span class="label">Time</span> <span class="value" id="timeLabel">06:20</span></div>
+    <div><span class="label">Species</span> <span class="value" id="speciesLabel">Maple</span></div>
+    <div><span class="label">Season</span> <span class="value" id="seasonLabel">Spring</span></div>
+    <div><span class="label">Weather</span> <span class="value" id="weatherLabel">Clear</span></div>
+    <div><span class="label">Intensity</span> <span class="value" id="intensityLabel">—</span></div>
+    <div><span class="label">Leaves</span> <span class="value" id="leafLabel">—</span></div>
+    <div><span class="label">Height</span> <span class="highlight" id="heightLabel">0.6 m</span></div>
+  </div>
+  <div id="hint">Drag to orbit • Pinch to zoom • Tap for audio</div>
+  <div id="controls">
+    <button id="hourBtn">+1 Hour</button>
+    <button id="growBtn">+7 Days</button>
+    <button id="timelapseBtn">Time-lapse</button>
+    <button id="weatherBtn">Weather</button>
+    <button id="intensityBtn">Intensity</button>
+    <button id="speciesBtn">Maple</button>
+    <button id="speedBtn">2×</button>
+    <button id="muteBtn">Mute</button>
+    <button id="resetCamBtn">Reset</button>
+  </div>
+</div>
+
+<script type="importmap">
+{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ========== STATE ==========
+let day=70, timeOfDay=8.1, speedMultiplier=1, isTimelapsing=false, muted=false;
+let currentSpecies="maple", dayWeatherType="clear", currentWeather="clear";
+let weatherIntensity=0, intensityLevel="normal", windStrength=0.25;
+let targetLeafCount=0, audioReady=false;
+
+const SPECIES={
+  maple:{name:"Maple",growthRate:1.0,maxHeight:9.5,trunkColor:0x4a3224,branchSpread:1.0,branchUpward:0.32,leafSize:1.0,leafDensity:1.05,blossom:false,barkRoughness:0.9},
+  oak:{name:"Oak",growthRate:0.72,maxHeight:11.0,trunkColor:0x3f2a1c,branchSpread:1.28,branchUpward:0.2,leafSize:1.18,leafDensity:0.92,blossom:false,barkRoughness:0.95},
+  birch:{name:"Birch",growthRate:1.28,maxHeight:8.0,trunkColor:0x5c5346,branchSpread:0.72,branchUpward:0.5,leafSize:0.72,leafDensity:1.2,blossom:false,barkRoughness:0.68},
+  cherry:{name:"Cherry",growthRate:0.95,maxHeight:7.0,trunkColor:0x4a3728,branchSpread:1.12,branchUpward:0.27,leafSize:0.84,leafDensity:1.08,blossom:true,barkRoughness:0.82}
+};
+
+let treeGroup, branchMeshes=[], leafMeshes=[], fallingLeaves=[], groundLeafMeshes=[];
+let sunMesh, moonMesh, stars, cloudGroup, waterMesh;
+let rainSys, snowBigSys, snowSmallSys, mistSys;
+let flowerMeshes=[]; // unused – kept for compatibility
+
+// ========== AUDIO (quieter, more silence) ==========
+let audioCtx, masterGain, windGain, rainGain, snowGain, thunderGain;
+let windFilter, rainFilter;
+
+function createNoiseBuffer(ctx, sec) {
+  const rate=ctx.sampleRate, len=rate*sec, buf=ctx.createBuffer(1,len,rate), d=buf.getChannelData(0);
+  let last=0;
+  for(let i=0;i<len;i++){const w=Math.random()*2-1; last=(last+0.02*w)/1.02; d[i]=last*3.2;}
+  return buf;
+}
+
+function initAudio(){
+  if(audioCtx){if(audioCtx.state==='suspended')audioCtx.resume();return;}
+  try{audioCtx=new(window.AudioContext||window.webkitAudioContext)();}catch(e){return;}
+  masterGain=audioCtx.createGain(); masterGain.gain.value=0.55; masterGain.connect(audioCtx.destination);
+
+  windGain=audioCtx.createGain(); windGain.gain.value=0.0001;
+  windFilter=audioCtx.createBiquadFilter(); windFilter.type='lowpass'; windFilter.frequency.value=380;
+  windGain.connect(windFilter); windFilter.connect(masterGain);
+  const ws=audioCtx.createBufferSource(); ws.buffer=createNoiseBuffer(audioCtx,7); ws.loop=true; ws.connect(windGain); ws.start();
+
+  rainGain=audioCtx.createGain(); rainGain.gain.value=0.0001;
+  rainFilter=audioCtx.createBiquadFilter(); rainFilter.type='bandpass'; rainFilter.frequency.value=1300; rainFilter.Q.value=0.55;
+  rainGain.connect(rainFilter); rainFilter.connect(masterGain);
+  const rs=audioCtx.createBufferSource(); rs.buffer=createNoiseBuffer(audioCtx,5); rs.loop=true; rs.connect(rainGain); rs.start();
+
+  snowGain=audioCtx.createGain(); snowGain.gain.value=0.0001;
+  const sf=audioCtx.createBiquadFilter(); sf.type='highpass'; sf.frequency.value=2600;
+  snowGain.connect(sf); sf.connect(masterGain);
+  const ss=audioCtx.createBufferSource(); ss.buffer=createNoiseBuffer(audioCtx,6); ss.loop=true; ss.connect(snowGain); ss.start();
+
+  thunderGain=audioCtx.createGain(); thunderGain.gain.value=0.85; thunderGain.connect(masterGain);
+  audioReady=true;
+  document.getElementById('status').textContent='Audio ON';
+}
+
+function playThunder(){
+  if(!audioReady||muted||!audioCtx)return;
+  const now=audioCtx.currentTime, osc=audioCtx.createOscillator(), g=audioCtx.createGain(), f=audioCtx.createBiquadFilter();
+  f.type='lowpass'; f.frequency.value=150; osc.type='sawtooth';
+  osc.frequency.setValueAtTime(65,now); osc.frequency.exponentialRampToValueAtTime(25,now+1.9);
+  g.gain.setValueAtTime(0.0001,now); g.gain.exponentialRampToValueAtTime(0.4,now+0.06); g.gain.exponentialRampToValueAtTime(0.0001,now+2.7);
+  osc.connect(f); f.connect(g); g.connect(thunderGain); osc.start(now); osc.stop(now+3);
+}
+
+function updateAudio(){
+  if(!audioReady||muted||!audioCtx)return;
+  const im=intensityLevel==='light'?0.4:intensityLevel==='heavy'?1.5:1.0;
+  // Wind breathes – sometimes almost silent
+  const calmFactor = 0.5 + 0.5*Math.sin(performance.now()*0.00015);
+  let w = (0.025 + windStrength*0.13) * calmFactor;
+  if(currentWeather==='storm') w*=1.5;
+  windGain.gain.linearRampToValueAtTime(Math.max(0.008,w), audioCtx.currentTime+1.2);
+  windFilter.frequency.linearRampToValueAtTime(260+windStrength*450, audioCtx.currentTime+1.0);
+
+  if((currentWeather==='rain'||currentWeather==='storm') && weatherIntensity>0.12){
+    rainGain.gain.linearRampToValueAtTime(0.07+weatherIntensity*0.22*im, audioCtx.currentTime+0.8);
+  } else rainGain.gain.linearRampToValueAtTime(0.0001, audioCtx.currentTime+1.8);
+
+  if(currentWeather==='snow' && weatherIntensity>0.12){
+    snowGain.gain.linearRampToValueAtTime(0.025+weatherIntensity*0.06*im, audioCtx.currentTime+1.0);
+  } else snowGain.gain.linearRampToValueAtTime(0.0001, audioCtx.currentTime+2.0);
+
+  if(currentWeather==='storm' && Math.random()<0.0025*im) playThunder();
+}
+
+function tryEnableAudio(){initAudio(); if(audioCtx?.state==='suspended') audioCtx.resume();}
+['click','touchstart','touchend'].forEach(e=>document.body.addEventListener(e,tryEnableAudio,{passive:true}));
+
+// ========== THREE ==========
+const container=document.getElementById('canvas-container');
+const scene=new THREE.Scene();
+const camera=new THREE.PerspectiveCamera(46,innerWidth/innerHeight,0.1,250);
+camera.position.set(9.5, 5.2, 12.5);
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth,innerHeight); renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+renderer.toneMapping=THREE.ACESFilmicToneMapping; renderer.toneMappingExposure=1.12;
+container.appendChild(renderer.domElement);
+
+const controls=new OrbitControls(camera,renderer.domElement);
+controls.enableDamping=true; controls.dampingFactor=0.06;
+controls.minDistance=4.5; controls.maxDistance=42; controls.maxPolarAngle=Math.PI*0.47;
+controls.minPolarAngle = 0.18;
+controls.enablePan = false;          // lock center – no sliding away from tree
+controls.target.set(0, 2.6, 0);      // aim at tree center
+
+// Keep camera above ground
+controls.addEventListener('change', () => {
+  if (camera.position.y < 1.4) camera.position.y = 1.4;
+});
+
+// Keep the orbit target locked on the vertical center of the tree
+function lockCameraToTree() {
+  const sp = SPECIES[currentSpecies];
+  const age = day / 365;
+  const h = 0.35 + (sp.maxHeight - 0.8) * (1 - Math.exp(-age / (7.0 / sp.growthRate))) * sp.growthRate;
+  // Aim roughly at 55% of the tree's height so it stays nicely framed
+  controls.target.set(0, Math.max(1.8, h * 0.55), 0);
+}
+
+const hemi=new THREE.HemisphereLight(0xcce0ff,0x2d4a22,0.4); scene.add(hemi);
+const sunLight=new THREE.DirectionalLight(0xfff4e6,1.5);
+sunLight.castShadow=true; sunLight.shadow.mapSize.set(2048,2048);
+sunLight.shadow.camera.near=1; sunLight.shadow.camera.far=70;
+sunLight.shadow.camera.left=-20; sunLight.shadow.camera.right=20;
+sunLight.shadow.camera.top=20; sunLight.shadow.camera.bottom=-20;
+sunLight.shadow.bias=-0.0003; scene.add(sunLight);
+const moonLight=new THREE.DirectionalLight(0xa5b4fc,0.2); moonLight.visible=false; scene.add(moonLight);
+const ambientNight=new THREE.AmbientLight(0x1e293b,0.1); scene.add(ambientNight);
+
+// Ground
+const ground=new THREE.Mesh(new THREE.CircleGeometry(36,128), new THREE.MeshStandardMaterial({color:0x3f4a3a,roughness:0.94,metalness:0}));
+ground.rotation.x=-Math.PI/2; ground.receiveShadow=true; scene.add(ground);
+
+// Water
+waterMesh=new THREE.Mesh(new THREE.PlaneGeometry(16,6,32,12), new THREE.MeshStandardMaterial({color:0x0e7490,roughness:0.14,metalness:0.4,transparent:true,opacity:0.7}));
+waterMesh.rotation.x=-Math.PI/2; waterMesh.position.set(-8,0.03,-11); scene.add(waterMesh);
+
+// ===== 360° HILLS =====
+function createRingHills(){
+  const group=new THREE.Group();
+  for(let i=0;i<12;i++){
+    const angle=i/12*Math.PI*2;
+    const dist=26+Math.random()*6;
+    const shape=new THREE.Shape();
+    const w=7+Math.random()*5;
+    shape.moveTo(-w,0);
+    shape.quadraticCurveTo(-w*0.4, 3+Math.random()*3.5, 0, 2+Math.random()*2.5);
+    shape.quadraticCurveTo(w*0.4, 3.5+Math.random()*3, w, 0);
+    shape.lineTo(w,-1); shape.lineTo(-w,-1);
+    const mesh=new THREE.Mesh(new THREE.ShapeGeometry(shape), new THREE.MeshBasicMaterial({color:i%2?0x1e3a2f:0x166534,transparent:true,opacity:0.6}));
+    mesh.position.set(Math.cos(angle)*dist, 0.05, Math.sin(angle)*dist);
+    mesh.rotation.y=-angle+Math.PI/2;
+    group.add(mesh);
+  }
+  scene.add(group);
+}
+createRingHills();
+
+// ===== CLOUDS (background only – appear only with rain/snow) =====
+cloudGroup=new THREE.Group();
+scene.add(cloudGroup);
+function makeCloud(){
+  const g=new THREE.Group();
+  const mat=new THREE.MeshStandardMaterial({color:0xe2e8f0,transparent:true,opacity:0.42,roughness:1});
+  // Fewer, more separated puffs so it doesn’t look like a tight bunch
+  const pieces = 3 + Math.floor(Math.random()*2);
+  for(let i=0;i<pieces;i++){
+    const s = 2.2 + Math.random()*3.5;
+    const m = new THREE.Mesh(new THREE.SphereGeometry(s, 7, 7), mat);
+    m.position.set(
+      (Math.random()-0.5)*8,
+      (Math.random()-0.5)*1.6,
+      (Math.random()-0.5)*4
+    );
+    g.add(m);
+  }
+  return g;
+}
+for(let i=0;i<7;i++){
+  const c = makeCloud();
+  const a = (i / 7) * Math.PI * 2 + Math.random()*0.4;
+  const d = 22 + Math.random()*18;
+  c.position.set(Math.cos(a)*d, 13 + Math.random()*5, Math.sin(a)*d);
+  c.userData.baseY = c.position.y;
+  c.visible = false;
+  cloudGroup.add(c);
+}
+
+// Ground stays clean – no grass or flowers so the tree remains the focus
+function spawnSeasonalFlowers(){ /* removed */ }
+
+// Celestial
+sunMesh=new THREE.Mesh(new THREE.SphereGeometry(1.2,24,24),new THREE.MeshBasicMaterial({color:0xfff7ed})); scene.add(sunMesh);
+moonMesh=new THREE.Mesh(new THREE.SphereGeometry(0.7,24,24),new THREE.MeshStandardMaterial({color:0xe2e8f0,roughness:0.8,metalness:0.1})); scene.add(moonMesh);
+
+const starPos=new Float32Array(1400*3);
+for(let i=0;i<1400;i++){
+  const r=80+Math.random()*50, theta=Math.random()*Math.PI*2, phi=Math.acos(2*Math.random()-1);
+  starPos[i*3]=r*Math.sin(phi)*Math.cos(theta);
+  starPos[i*3+1]=r*Math.cos(phi)+12;
+  starPos[i*3+2]=r*Math.sin(phi)*Math.sin(theta);
+}
+const starGeo=new THREE.BufferGeometry(); starGeo.setAttribute('position',new THREE.BufferAttribute(starPos,3));
+const starMat=new THREE.PointsMaterial({color:0xffffff,size:0.28,transparent:true,opacity:0,depthWrite:false});
+stars=new THREE.Points(starGeo,starMat); scene.add(stars);
+
+scene.fog=new THREE.FogExp2(0x7dd3fc,0.01);
+scene.background=new THREE.Color(0x38bdf8);
+
+// ========== HELPERS ==========
+function getSeason(d){const m=((d%365)/30.4)|0; if(m>=2&&m<=4)return'spring'; if(m>=5&&m<=7)return'summer'; if(m>=8&&m<=10)return'fall'; return'winter';}
+function pickDayWeather(d){
+  const s=getSeason(d), r=Math.random();
+  // Winter: only clear or snow — never rain
+  if(s==='winter') return r<0.62 ? 'snow' : 'clear';
+  if(s==='fall') return r<0.36?'rain':(r<0.5?'storm':'clear');
+  if(s==='spring') return r<0.38?'rain':(r<0.5?'storm':'clear');
+  return r<0.22?'rain':(r<0.32?'storm':'clear');
+}
+function getColors(d){
+  const s=getSeason(d);
+  if(s==='spring')return{trunk:0x4a3224,leaf:0x86efac,leaf2:0x4ade80,ground:0x3f4a3a,skyDay:0x38bdf8,skyDawn:0xfda4af};
+  if(s==='summer')return{trunk:0x3f2a1c,leaf:0x22c55e,leaf2:0x16a34a,ground:0x3a4534,skyDay:0x0ea5e9,skyDawn:0xfdba74};
+  if(s==='fall')return{trunk:0x5c3a1c,leaf:0xf97316,leaf2:0xea580c,ground:0x4a4035,skyDay:0xf59e0b,skyDawn:0xfb923c};
+  return{trunk:0x44403c,leaf:0xa8a29e,leaf2:0x78716c,ground:0x4b5563,skyDay:0x94a3b8,skyDawn:0xe2e8f0};
+}
+function intensityMultiplier(){
+  if (intensityLevel === 'normal') return 0.55;
+  if (intensityLevel === 'super') return 2.6;
+  return 1.3; // intense
+}
+
+// ========== TREE ==========
+function createLeafCard(color){
+  const g=new THREE.Group();
+  const geo=new THREE.PlaneGeometry(0.33,0.43);
+  const mat=new THREE.MeshStandardMaterial({color,roughness:0.65,metalness:0,side:THREE.DoubleSide,transparent:true,opacity:0.94});
+  const p1=new THREE.Mesh(geo,mat), p2=new THREE.Mesh(geo,mat.clone()); p2.rotation.y=Math.PI/2;
+  g.add(p1,p2); return g;
+}
+function addBranch(start,dir,length,depth,maxDepth,radius,colors,sp){
+  if(depth>maxDepth)return;
+  const end=start.clone().addScaledVector(dir,length);
+  const curve=new THREE.LineCurve3(start,end);
+  const mesh=new THREE.Mesh(new THREE.TubeGeometry(curve,1,radius,Math.max(5,9-depth),false),
+    new THREE.MeshStandardMaterial({color:colors.trunk,roughness:sp.barkRoughness,metalness:0.03}));
+  mesh.castShadow=true; mesh.receiveShadow=true; treeGroup.add(mesh); branchMeshes.push(mesh);
+
+  const show=getSeason(day)!=='winter';
+  if(show && depth>=maxDepth-2 && depth>1 && leafMeshes.length<targetLeafCount){
+    const count=Math.min(Math.floor((4+Math.random()*5)*sp.leafDensity), targetLeafCount-leafMeshes.length);
+    for(let i=0;i<count;i++){
+      let col=Math.random()>0.4?colors.leaf:colors.leaf2;
+      if(sp.blossom&&getSeason(day)==='spring') col=Math.random()>0.3?0xf9a8d4:0xfbcfe8;
+      const leaf=createLeafCard(col);
+      const t=0.25+Math.random()*0.72;
+      const pos=start.clone().lerp(end,t);
+      pos.x+=(Math.random()-0.5)*0.58; pos.y+=(Math.random()-0.5)*0.42; pos.z+=(Math.random()-0.5)*0.58;
+      leaf.position.copy(pos);
+      leaf.rotation.set(Math.random()*Math.PI,Math.random()*Math.PI,Math.random()*Math.PI);
+      leaf.scale.setScalar((0.62+Math.random()*0.55)*sp.leafSize);
+      leaf.userData.basePos=pos.clone(); leaf.userData.phase=Math.random()*Math.PI*2; leaf.userData.amp=0.5+Math.random()*0.95;
+      treeGroup.add(leaf); leafMeshes.push(leaf);
+    }
+  }
+  if(depth<maxDepth){
+    const n=depth===0?3:(depth<3?3:2);
+    for(let i=0;i<n;i++){
+      const nd=dir.clone();
+      const spread=(0.42+Math.random()*0.4)*sp.branchSpread;
+      const ang=(i/n)*Math.PI*2+(Math.random()-0.5)*0.72;
+      nd.x+=Math.cos(ang)*spread; nd.z+=Math.sin(ang)*spread; nd.y+=sp.branchUpward+Math.random()*0.32; nd.normalize();
+      addBranch(end,nd,length*(0.6+Math.random()*0.23),depth+1,maxDepth,radius*(0.59+Math.random()*0.1),colors,sp);
+    }
+  }
+}
+function calculateTargetLeaves(){
+  const sp=SPECIES[currentSpecies], age=day/365, season=getSeason(day);
+  let cap=Math.min(Math.floor(40+age*55*sp.leafDensity),280);
+  if(season==='winter') targetLeafCount=Math.floor(cap*0.04);
+  else if(season==='fall'){const p=Math.min(1,((day%365)-240)/90); targetLeafCount=Math.floor(cap*Math.max(0.08,1-p*0.9));}
+  else targetLeafCount=cap;
+}
+function rebuildTree(){
+  fallingLeaves.forEach(l=>scene.remove(l)); fallingLeaves=[];
+  // Clear most ground leaves on rebuild during winter/spring
+  if (getSeason(day) === 'winter') clearGroundLeaves(1);
+  else if (getSeason(day) === 'spring') clearGroundLeaves(0);
+  if(treeGroup){scene.remove(treeGroup); treeGroup.traverse(o=>{if(o.geometry)o.geometry.dispose();if(o.material)(Array.isArray(o.material)?o.material:[o.material]).forEach(m=>m.dispose());});}
+  branchMeshes=[]; leafMeshes=[]; treeGroup=new THREE.Group(); scene.add(treeGroup);
+  calculateTargetLeaves();
+  const colors=getColors(day), sp=SPECIES[currentSpecies], age=day/365;
+  const maxDepth=Math.min(2+Math.floor(age*sp.growthRate/2.5),6);
+  const baseLen=0.85+Math.min(age*0.37*sp.growthRate,sp.maxHeight*0.52);
+  const baseRad=0.11+Math.min(age*0.023*sp.growthRate,0.31);
+  colors.trunk=sp.trunkColor;
+  addBranch(new THREE.Vector3(),new THREE.Vector3(0,1,0),baseLen,0,maxDepth,baseRad,colors,sp);
+  ground.material.color.setHex(colors.ground);
+  spawnSeasonalFlowers();
+  lockCameraToTree();
+}
+
+// Leaf shedding
+function shedLeavesGradually(){
+  calculateTargetLeaves();
+  const excess=leafMeshes.length-targetLeafCount;
+  if(excess<=0)return;
+  const toShed=Math.min(excess,1+Math.floor(Math.random()*2));
+  for(let i=0;i<toShed;i++){
+    if(!leafMeshes.length)break;
+    const idx=(Math.random()*leafMeshes.length)|0;
+    const leaf=leafMeshes.splice(idx,1)[0];
+    treeGroup.remove(leaf); scene.add(leaf);
+    leaf.userData.vx=(Math.random()-0.5)*0.06*windStrength;
+    leaf.userData.vy=-0.015-Math.random()*0.025;
+    leaf.userData.vz=(Math.random()-0.5)*0.06*windStrength;
+    leaf.userData.rot=(Math.random()-0.5)*0.16; leaf.userData.life=1;
+    fallingLeaves.push(leaf);
+  }
+}
+
+function clearGroundLeaves(keepMax = 2) {
+  while (groundLeafMeshes.length > keepMax) {
+    const old = groundLeafMeshes.shift();
+    scene.remove(old);
+  }
+}
+
+function updateFalling(dt){
+  for(let i=fallingLeaves.length-1;i>=0;i--){
+    const l=fallingLeaves[i], u=l.userData;
+    u.vy-=0.0021*dt*60; u.vx+=(Math.random()-0.5)*0.002*windStrength; u.vz+=(Math.random()-0.5)*0.002*windStrength;
+    l.position.x+=u.vx*dt*60; l.position.y+=u.vy*dt*60; l.position.z+=u.vz*dt*60;
+    l.rotation.x+=u.rot*dt*60; l.rotation.z+=u.rot*0.7*dt*60;
+    if(l.position.y<0.08){
+      l.position.y=0.02+Math.random()*0.03; l.rotation.x=Math.PI/2+(Math.random()-0.5)*0.5;
+      groundLeafMeshes.push(l); fallingLeaves.splice(i,1);
+      if(groundLeafMeshes.length>120){const old=groundLeafMeshes.shift(); scene.remove(old);}
+    }
+  }
+}
+
+// Particles – two snow types
+function makeParticles(count,color,size,speedY,spread=36){
+  const pos=new Float32Array(count*3), vel=[];
+  for(let i=0;i<count;i++){
+    pos[i*3]=(Math.random()-0.5)*spread; pos[i*3+1]=Math.random()*20+1; pos[i*3+2]=(Math.random()-0.5)*spread;
+    vel.push({x:(Math.random()-0.5)*0.04,y:speedY*(0.55+Math.random()*0.6)});
+  }
+  const geo=new THREE.BufferGeometry(); geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  const mat=new THREE.PointsMaterial({color,size,transparent:true,opacity:0.82,depthWrite:false});
+  const pts=new THREE.Points(geo,mat); pts.userData.vel=vel; pts.visible=false; scene.add(pts); return pts;
+}
+rainSys=makeParticles(1500,0xbcd6f5,0.048,-0.27);
+snowBigSys=makeParticles(650,0xffffff,0.15,-0.024,36);   // larger soft flakes
+snowSmallSys=makeParticles(3800,0xf8fafc,0.042,-0.07,46); // many fine drifting particles
+// Morning mist – very fine, dense, background only
+mistSys = makeParticles(4200, 0xdbeafe, 0.045, -0.004, 48);
+mistSys.material.opacity = 0.35;
+mistSys.material.depthWrite = false;
+mistSys.material.transparent = true;
+
+function tickParticles(sys,str,extraY=1){
+  if(!sys.visible)return;
+  const arr=sys.geometry.attributes.position.array, vel=sys.userData.vel;
+  for(let i=0;i<vel.length;i++){
+    arr[i*3]+=vel[i].x*str; arr[i*3+1]+=vel[i].y*extraY;
+    if(arr[i*3+1]<0){arr[i*3+1]=15+Math.random()*6; arr[i*3]=(Math.random()-0.5)*36; arr[i*3+2]=(Math.random()-0.5)*36;}
+  }
+  sys.geometry.attributes.position.needsUpdate=true;
+}
+
+// Atmosphere
+function updateAtmosphere(){
+  const t=timeOfDay, colors=getColors(day), im=intensityMultiplier();
+  const sunAngle=((t-6)/12)*Math.PI;
+  sunMesh.position.set(Math.cos(sunAngle)*54, Math.sin(sunAngle)*46, -20);
+  sunLight.position.copy(sunMesh.position).normalize().multiplyScalar(30);
+  const moonAngle=sunAngle+Math.PI;
+  moonMesh.position.set(Math.cos(moonAngle)*46, Math.sin(moonAngle)*40, 16);
+  moonLight.position.copy(moonMesh.position).normalize().multiplyScalar(24);
+
+  let dayFactor=0;
+  if(t>5.4&&t<20.6){dayFactor=Math.sin(((t-5.4)/15.2)*Math.PI); dayFactor=Math.pow(Math.max(0,dayFactor),0.82);}
+  sunLight.intensity=dayFactor*1.6; sunLight.visible=dayFactor>0.04;
+
+  // ----- Moon phase (0 = new, 1 = full) based on day of year -----
+  // Simple 29.5-day lunar cycle
+  const lunarPhase = ((day % 29.5) / 29.5);           // 0 → 1
+  const moonPhaseStrength = 0.5 - 0.5 * Math.cos(lunarPhase * Math.PI * 2); // 0 at new, 1 at full
+
+  // Base night brightness from stars + moon
+  let nightBright = 0.14 + moonPhaseStrength * 0.22;  // stars keep it from being pitch black
+
+  // Weather modifiers at night
+  if (dayFactor < 0.35) {
+    if (currentWeather === 'rain' || currentWeather === 'storm') {
+      // Summer rainy nights feel darker
+      if (getSeason(day) === 'summer') nightBright *= 0.55;
+      else nightBright *= 0.7;
+    }
+    if (currentWeather === 'snow') {
+      // Snow reflects light – nights stay brighter even though it’s dark
+      nightBright *= 1.45;
+    }
+  }
+
+  moonLight.visible = dayFactor < 0.45;
+  moonLight.intensity = (1 - dayFactor) * (0.12 + moonPhaseStrength * 0.32);
+  hemi.intensity = 0.18 + dayFactor * 0.4;
+  ambientNight.intensity = (1 - dayFactor) * nightBright;
+  starMat.opacity = Math.max(0, (1 - dayFactor * 1.9) * (currentWeather === 'storm' ? 0.35 : 1));
+
+  // Moon appearance
+  moonMesh.visible = dayFactor < 0.6;
+  const moonGlow = (1 - dayFactor) * (0.15 + moonPhaseStrength * 0.4);
+  moonMesh.material.emissive = new THREE.Color(0x94a3b8);
+  moonMesh.material.emissiveIntensity = moonGlow;
+  // Scale moon slightly with phase for visual feedback
+  const moonScale = 0.75 + moonPhaseStrength * 0.35;
+  moonMesh.scale.setScalar(moonScale);
+
+  const dawnDusk=Math.max(0,1-Math.abs(t-6.1)*0.65)+Math.max(0,1-Math.abs(t-18.6)*0.65);
+  const sky=new THREE.Color().copy(new THREE.Color(colors.skyDay));
+  if(dawnDusk>0.08)sky.lerp(new THREE.Color(colors.skyDawn),Math.min(1,dawnDusk));
+  if(dayFactor<0.28)sky.lerp(new THREE.Color(0x0c1525),1-dayFactor*3.5);
+  scene.background=sky; scene.fog.color.copy(sky);
+
+  let fogDensity=0.008;
+  if(t>4.6&&t<9.2){const m=1-Math.abs(t-6.6)/2.6; fogDensity+=Math.max(0,m)*0.03;}
+  if(currentWeather==='rain'||currentWeather==='storm')fogDensity+=0.006*im;
+  if(currentWeather==='snow')fogDensity+=0.007*im;
+  scene.fog.density=fogDensity;
+
+  // Weather – mutually exclusive + winter never rains
+  if (getSeason(day) === 'winter' && (dayWeatherType === 'rain' || dayWeatherType === 'storm')) {
+    dayWeatherType = 'snow';
+  }
+  if(dayWeatherType==='clear'){weatherIntensity=0; currentWeather='clear';}
+  else{
+    weatherIntensity=Math.max(0.2,Math.sin(((t-5)/14)*Math.PI)*0.95);
+    currentWeather=dayWeatherType;
+    // Promote rain → storm when intensity is super
+    if (currentWeather === 'rain' && intensityLevel === 'super') currentWeather = 'storm';
+  }
+
+  // Particles – never rain + snow together
+  rainSys.visible=(currentWeather==='rain'||currentWeather==='storm')&&weatherIntensity>0.12;
+  const isSnow=currentWeather==='snow'&&weatherIntensity>0.12;
+  snowBigSys.visible=isSnow;
+  snowSmallSys.visible=isSnow;  // always mix sizes
+  // Morning mist only 5am–8am, and fades when camera is close to the tree
+  const isMorningMistHours = (t >= 5.0 && t <= 8.0);
+  mistSys.visible = isMorningMistHours;
+  if (isMorningMistHours) {
+    // Distance from camera to tree origin
+    const dist = camera.position.length();
+    // Close (< 9) → almost no mist, far (> 18) → full mist
+    const mistFade = Math.max(0, Math.min(1, (dist - 8.5) / 10));
+    mistSys.material.opacity = 0.22 * mistFade;
+  }
+
+  // Clouds only when raining or snowing (pure background)
+  const showClouds = (currentWeather === 'rain' || currentWeather === 'storm' || currentWeather === 'snow');
+  cloudGroup.children.forEach((c,i)=>{
+    c.visible = showClouds;
+    if(showClouds){
+      c.position.y = c.userData.baseY + Math.sin(performance.now()*0.00025 + i)*0.35;
+      c.traverse(m=>{
+        if(m.material) m.material.opacity = currentWeather === 'storm' ? 0.58 : 0.38;
+      });
+    }
+  });
+
+  if(currentWeather==='storm')windStrength=0.9+weatherIntensity*0.8*im;
+  else if(currentWeather==='rain')windStrength=0.45+weatherIntensity*0.4*im;
+  else if(currentWeather==='snow')windStrength=0.3+weatherIntensity*0.35*im;
+  else windStrength=0.18+Math.sin(t*0.3)*0.08;
+
+  updateAudio();
+}
+
+// UI
+function formatTime(t){
+  let h = Math.floor(t) % 24;
+  const m = Math.floor((t % 1) * 60);
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  h = h % 12;
+  if (h === 0) h = 12;
+  return `${h}:${String(m).padStart(2,'0')} ${ampm}`;
+}
+function updateLabels(){
+  document.getElementById('dayLabel').textContent=day;
+  document.getElementById('timeLabel').textContent=formatTime(timeOfDay);
+  document.getElementById('speciesLabel').textContent=SPECIES[currentSpecies].name;
+  document.getElementById('seasonLabel').textContent=getSeason(day)[0].toUpperCase()+getSeason(day).slice(1);
+  document.getElementById('weatherLabel').textContent=currentWeather[0].toUpperCase()+currentWeather.slice(1);
+  let intenLabel = '—';
+  if (currentWeather === 'rain' || currentWeather === 'storm') {
+    intenLabel = intensityLevel === 'normal' ? 'Light Rain' :
+                 intensityLevel === 'intense' ? 'Heavy Rain' : 'Thunderstorm';
+  } else if (currentWeather === 'snow') {
+    intenLabel = intensityLevel === 'normal' ? 'Light Snow' :
+                 intensityLevel === 'intense' ? 'Major Snow' : 'Blizzard';
+  }
+  document.getElementById('intensityLabel').textContent = intenLabel;
+  document.getElementById('leafLabel').textContent=leafMeshes.length+' / '+targetLeafCount;
+  const sp=SPECIES[currentSpecies],age=day/365;
+  document.getElementById('heightLabel').textContent=(0.35+(sp.maxHeight-0.8)*(1-Math.exp(-age/(7/sp.growthRate)))*sp.growthRate).toFixed(2)+' m';
+  lockCameraToTree();
+  let statusWeather = currentWeather;
+  if (currentWeather === 'rain' || currentWeather === 'storm') {
+    statusWeather = intensityLevel === 'normal' ? 'light rain' :
+                    intensityLevel === 'intense' ? 'heavy rain' : 'thunderstorm';
+  } else if (currentWeather === 'snow') {
+    statusWeather = intensityLevel === 'normal' ? 'light snow' :
+                    intensityLevel === 'intense' ? 'major snow' : 'blizzard';
+  }
+  document.getElementById('status').textContent = `${formatTime(timeOfDay)} • ${statusWeather} • Day ${day}`;
+}
+
+function advanceTime(hours){
+  timeOfDay+=hours;
+  while(timeOfDay>=24){
+    timeOfDay-=24;
+    day++;
+    dayWeatherType=pickDayWeather(day);
+    const season = getSeason(day);
+    // When we enter winter or spring, clear most fallen leaves
+    if (season === 'winter' || season === 'spring') {
+      clearGroundLeaves(season === 'winter' ? 1 : 0);
+    }
+    if(day%140<1) rebuildTree();
+    else calculateTargetLeaves();
+  }
+  updateAtmosphere(); updateLabels();
+}
+
+document.getElementById('hourBtn').onclick=()=>{
+  if(isTimelapsing)return;
+  tryEnableAudio();
+  advanceTime(1);
+  shedLeavesGradually();
+  updateAtmosphere();
+  updateLabels();
+};
+
+document.getElementById('growBtn').onclick=()=>{
+  if(isTimelapsing)return; tryEnableAudio();
+  const prevSeason = getSeason(day);
+  for(let i=0;i<7*speedMultiplier;i++){day++;dayWeatherType=pickDayWeather(day);calculateTargetLeaves();}
+  const newSeason = getSeason(day);
+  if (newSeason === 'winter' || newSeason === 'spring') {
+    clearGroundLeaves(newSeason === 'winter' ? 1 : 0);
+  }
+  for(let k=0;k<6;k++)shedLeavesGradually();
+  if(day%90<7)rebuildTree(); updateAtmosphere(); updateLabels();
+};
+document.getElementById('timelapseBtn').onclick=async()=>{
+  if(isTimelapsing)return; tryEnableAudio(); isTimelapsing=true;
+  for(let i=0;i<48;i++){advanceTime(0.55*speedMultiplier);shedLeavesGradually();await new Promise(r=>setTimeout(r,speedMultiplier===2?16:26));}
+  isTimelapsing=false;
+};
+document.getElementById('weatherBtn').onclick=()=>{
+  tryEnableAudio();
+  const season = getSeason(day);
+  // In winter only cycle between clear and snow
+  const options = season === 'winter'
+    ? ['clear', 'snow']
+    : ['clear', 'rain', 'storm', 'snow'];
+  let idx = options.indexOf(dayWeatherType);
+  if (idx === -1) idx = 0;
+  dayWeatherType = options[(idx + 1) % options.length];
+  currentWeather = dayWeatherType;
+  updateAtmosphere();
+  updateLabels();
+};
+document.getElementById('intensityBtn').onclick=()=>{tryEnableAudio();const o=['normal','intense','super'];intensityLevel=o[(o.indexOf(intensityLevel)+1)%3];updateAtmosphere();updateLabels();};
+document.getElementById('speciesBtn').onclick=()=>{tryEnableAudio();const o=['maple','oak','birch','cherry'];currentSpecies=o[(o.indexOf(currentSpecies)+1)%4];document.getElementById('speciesBtn').textContent=SPECIES[currentSpecies].name;rebuildTree();updateLabels();};
+document.getElementById('speedBtn').onclick=()=>{speedMultiplier=speedMultiplier===1?2:1;const b=document.getElementById('speedBtn');if(speedMultiplier===2){b.classList.add('active');b.textContent='2× ON';}else{b.classList.remove('active');b.textContent='2×';}};
+document.getElementById('muteBtn').onclick=()=>{muted=!muted;document.getElementById('muteBtn').textContent=muted?'Unmute':'Mute';if(masterGain)masterGain.gain.value=muted?0:0.55;document.getElementById('status').textContent=muted?'Audio MUTED':'Audio ON';};
+document.getElementById('resetCamBtn').onclick=()=>{camera.position.set(9.5, 5.2, 12.5);controls.target.set(0,2.8,0);};
+
+// Loop
+const clock=new THREE.Clock();
+function animate(){
+  requestAnimationFrame(animate);
+  const dt=Math.min(clock.getDelta(),0.05), t=clock.elapsedTime;
+  if(!isTimelapsing){timeOfDay+=dt*0.01*speedMultiplier;if(timeOfDay>=24){timeOfDay-=24;day++;dayWeatherType=pickDayWeather(day);calculateTargetLeaves();}updateAtmosphere();}
+  controls.update();
+  tickParticles(rainSys,windStrength);
+  tickParticles(snowBigSys, windStrength*0.5, 0.5);  // big flakes - slow float
+  tickParticles(snowSmallSys, windStrength*1.5, 0.9); // fine particles - more drift
+  tickParticles(mistSys,0.35);
+  leafMeshes.forEach(leaf=>{
+    const p=leaf.userData.phase,a=leaf.userData.amp*windStrength;
+    const wx=Math.sin(t*1.5+p)*0.06*a, wz=Math.cos(t*1.15+p*0.8)*0.05*a, wy=Math.sin(t*2+p*1.3)*0.028*a;
+    leaf.position.x=leaf.userData.basePos.x+wx; leaf.position.y=leaf.userData.basePos.y+wy; leaf.position.z=leaf.userData.basePos.z+wz;
+    leaf.rotation.z=wx*3.3; leaf.rotation.x=wy*4;
+  });
+  branchMeshes.forEach((b,i)=>{if(i>7)b.rotation.z=Math.sin(t*0.55+i*0.3)*0.015*windStrength;});
+  waterMesh.position.y=0.03+Math.sin(t*0.65)*0.007;
+  if(Math.random()<0.035)shedLeavesGradually();
+  // Slowly clean up ground leaves, especially in winter
+  if (getSeason(day) === 'winter' && groundLeafMeshes.length > 2 && Math.random() < 0.02) {
+    const old = groundLeafMeshes.shift();
+    if (old) scene.remove(old);
+  }
+  updateFalling(dt); updateLabels();
+  renderer.render(scene,camera);
+}
+window.addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+
+dayWeatherType=pickDayWeather(day);
+rebuildTree(); updateAtmosphere(); updateLabels(); animate();
+</script>
+</body>
+</html>
