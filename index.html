@@ -82,7 +82,7 @@ const SPECIES={
   cherry:{name:"Cherry",growthRate:0.95,maxHeight:7.0,trunkColor:0x4a3728,branchSpread:1.12,branchUpward:0.27,leafSize:0.84,leafDensity:1.08,blossom:true,barkRoughness:0.82}
 };
 
-let treeGroup, branchMeshes=[], leafMeshes=[], fallingLeaves=[], groundLeafMeshes=[];
+let treeGroup, branchMeshes=[], leafMeshes=[], fallingLeaves=[], groundLeafMeshes=[], branchTips=[];
 let sunMesh, moonMesh, stars, cloudGroup, waterMesh;
 let rainSys, snowBigSys, snowSmallSys, mistSys;
 let flowerMeshes=[]; // unused – kept for compatibility
@@ -187,14 +187,14 @@ container.appendChild(renderer.domElement);
 
 const controls=new OrbitControls(camera,renderer.domElement);
 controls.enableDamping=true; controls.dampingFactor=0.06;
-controls.minDistance=3.2; controls.maxDistance=280; controls.maxPolarAngle=Math.PI*0.72;
-controls.minPolarAngle = 0.12;
+controls.minDistance=3.2; controls.maxDistance=320; controls.maxPolarAngle=Math.PI*0.95;
+controls.minPolarAngle = 0.01; // full top-down allowed even from far away
 controls.enablePan = false;          // lock center – no sliding away from tree
 controls.target.set(0, 2.6, 0);      // aim at tree center
 
 // Keep camera above ground
 controls.addEventListener('change', () => {
-  // Allow getting low (almost under canopy) but never through the ground
+  // Never through the ground, but free to go high above the tree
   if (camera.position.y < 0.9) {
     camera.position.y = 0.9;
   }
@@ -206,15 +206,30 @@ function lockCameraToTree() {
   const age = day / 365;
   const h = 0.35 + (sp.maxHeight - 0.8) * (1 - Math.exp(-age / (7.0 / sp.growthRate))) * sp.growthRate;
   const dist = camera.position.length();
-  // When zoomed in close, aim higher so you look up into canopy / sky
-  // When far, aim mid-tree
+  const camY = camera.position.y;
   let aimY;
-  if (dist < 8) {
-    aimY = Math.max(2.2, h * 0.75); // look up under the canopy
+  if (camY > h * 0.9) {
+    // Above the tree (close or far) – aim at crown so sky opens up above
+    aimY = h * 1.15;
+  } else if (dist < 8) {
+    aimY = Math.max(2.2, h * 0.75);
   } else {
     aimY = Math.max(1.8, h * 0.55);
   }
   controls.target.set(0, aimY, 0);
+}
+
+// Smooth visual growth – tiny scale changes, no topology jumps
+function updateTreeScale() {
+  if (!treeGroup) return;
+  const sp = SPECIES[currentSpecies];
+  const age = day / 365;
+  // Maps age to a gentle scale so the tree grows a little every day
+  const targetScale = 0.55 + Math.min(age * 0.42 * sp.growthRate, 2.8);
+  const current = treeGroup.scale.x;
+  // Move only a tiny step toward target (no doubling)
+  const next = current + (targetScale - current) * 0.08;
+  treeGroup.scale.setScalar(next);
 }
 
 const hemi=new THREE.HemisphereLight(0xcce0ff,0x2d4a22,0.4); scene.add(hemi);
@@ -388,6 +403,10 @@ function addBranch(start,dir,length,depth,maxDepth,radius,colors,sp){
   const mesh=new THREE.Mesh(new THREE.TubeGeometry(curve,1,radius,Math.max(5,9-depth),false),
     new THREE.MeshStandardMaterial({color:colors.trunk,roughness:sp.barkRoughness,metalness:0.03}));
   mesh.castShadow=true; mesh.receiveShadow=true; treeGroup.add(mesh); branchMeshes.push(mesh);
+  // Store outer branch tips for leaf regrowth
+  if (depth >= 2) {
+    branchTips.push({ start: start.clone(), end: end.clone(), depth });
+  }
 
   const show = getSeason(day) !== 'winter';
 
@@ -486,9 +505,17 @@ function addBranch(start,dir,length,depth,maxDepth,radius,colors,sp){
 function calculateTargetLeaves(){
   const sp=SPECIES[currentSpecies], age=day/365, season=getSeason(day);
   let cap=Math.min(Math.floor(40+age*55*sp.leafDensity),280);
-  if(season==='winter') targetLeafCount=Math.floor(cap*0.04);
-  else if(season==='fall'){const p=Math.min(1,((day%365)-240)/90); targetLeafCount=Math.floor(cap*Math.max(0.08,1-p*0.9));}
-  else targetLeafCount=cap;
+  if(season==='winter') {
+    // Heart of winter: 0–5 leaves max, all "dead"
+    targetLeafCount = Math.min(5, Math.floor(cap * 0.02));
+  } else if(season==='fall'){
+    // Gradual drop through fall
+    const dayInYear = day % 365;
+    const fallProgress = Math.min(1, Math.max(0, (dayInYear - 240) / 90));
+    targetLeafCount = Math.floor(cap * Math.max(0.05, 1 - fallProgress * 0.95));
+  } else {
+    targetLeafCount = cap;
+  }
 }
 function rebuildTree(){
   fallingLeaves.forEach(l=>scene.remove(l)); fallingLeaves=[];
@@ -496,7 +523,7 @@ function rebuildTree(){
   if (getSeason(day) === 'winter') clearGroundLeaves(1);
   else if (getSeason(day) === 'spring') clearGroundLeaves(0);
   if(treeGroup){scene.remove(treeGroup); treeGroup.traverse(o=>{if(o.geometry)o.geometry.dispose();if(o.material)(Array.isArray(o.material)?o.material:[o.material]).forEach(m=>m.dispose());});}
-  branchMeshes=[]; leafMeshes=[]; treeGroup=new THREE.Group(); scene.add(treeGroup);
+  branchMeshes=[]; leafMeshes=[]; branchTips=[]; treeGroup=new THREE.Group(); treeGroup.scale.setScalar(0.55); scene.add(treeGroup);
   calculateTargetLeaves();
   const colors=getColors(day), sp=SPECIES[currentSpecies], age=day/365;
   const maxDepth=Math.min(2+Math.floor(age*sp.growthRate/4.2),6); // slower branching complexity
@@ -510,6 +537,28 @@ function rebuildTree(){
 }
 
 // Leaf shedding
+
+function updateLeafColors() {
+  const season = getSeason(day);
+  const sp = SPECIES[currentSpecies];
+  const colors = getColors(day);
+  leafMeshes.forEach(leaf => {
+    leaf.traverse(c => {
+      if (c.isMesh && c.material && c.material.color) {
+        if (season === 'winter') {
+          // Dead leaves – brown / gray-brown
+          c.material.color.setHex(Math.random() > 0.5 ? 0x6b4c2a : 0x5c4033);
+        } else if (season === 'fall') {
+          // Fall colors – orange / red / yellow for maple-like
+          const fallColors = [0xf97316, 0xea580c, 0xfbbf24, 0xdc2626, 0xb45309];
+          c.material.color.setHex(fallColors[(Math.random() * fallColors.length) | 0]);
+        }
+        // spring/summer keep their original green (set at creation)
+      }
+    });
+  });
+}
+
 function shedLeavesGradually(){
   calculateTargetLeaves();
   const excess=leafMeshes.length-targetLeafCount;
@@ -525,6 +574,43 @@ function shedLeavesGradually(){
     leaf.userData.vz=(Math.random()-0.5)*0.06*windStrength;
     leaf.userData.rot=(Math.random()-0.5)*0.16; leaf.userData.life=1;
     fallingLeaves.push(leaf);
+  }
+}
+
+// Regrow leaves onto existing branches when target goes up (spring etc.)
+function regrowLeavesGradually() {
+  calculateTargetLeaves();
+  if (getSeason(day) === 'winter') return;
+  if (leafMeshes.length >= targetLeafCount) return;
+  if (branchTips.length === 0) return;
+
+  const sp = SPECIES[currentSpecies];
+  const colors = getColors(day);
+  const need = targetLeafCount - leafMeshes.length;
+  const toAdd = Math.min(need, 2 + Math.floor(Math.random() * 3));
+
+  for (let i = 0; i < toAdd; i++) {
+    const tip = branchTips[(Math.random() * branchTips.length) | 0];
+    let col = Math.random() > 0.4 ? colors.leaf : colors.leaf2;
+    if (sp.blossom && getSeason(day) === 'spring') col = Math.random() > 0.3 ? 0xf9a8d4 : 0xfbcfe8;
+    const leaf = createLeafCard(col);
+    const t = 0.45 + Math.random() * 0.55;
+    const pos = tip.start.clone().lerp(tip.end, t);
+    pos.x += (Math.random() - 0.5) * 0.4;
+    pos.y += (Math.random() - 0.5) * 0.28;
+    pos.z += (Math.random() - 0.5) * 0.4;
+    leaf.position.copy(pos);
+    leaf.rotation.set(Math.random()*Math.PI, Math.random()*Math.PI, Math.random()*Math.PI);
+    // Bud / sprout – start small
+    const fullScale = (0.52 + Math.random() * 0.45) * sp.leafSize;
+    leaf.scale.setScalar(fullScale * 0.12);
+    leaf.userData.basePos = pos.clone();
+    leaf.userData.phase = Math.random() * Math.PI * 2;
+    leaf.userData.amp = 0.5 + Math.random() * 0.95;
+    leaf.userData.fullScale = fullScale;
+    leaf.userData.sprout = 0.12; // grows toward 1
+    treeGroup.add(leaf);
+    leafMeshes.push(leaf);
   }
 }
 
@@ -784,7 +870,7 @@ function advanceTime(hours){
     if (season === 'winter' || season === 'spring') {
       clearGroundLeaves(season === 'winter' ? 1 : 0);
     }
-    if(day%1100<1) rebuildTree(); // only every ~3 years
+    if(day%1400<1) rebuildTree(); // only every ~4 years – very rare
     else calculateTargetLeaves();
   }
   updateAtmosphere(); updateLabels();
@@ -829,7 +915,27 @@ document.getElementById('weatherBtn').onclick=()=>{
   updateAtmosphere();
   updateLabels();
 };
-document.getElementById('intensityBtn').onclick=()=>{tryEnableAudio();const o=['normal','intense','super'];intensityLevel=o[(o.indexOf(intensityLevel)+1)%3];updateAtmosphere();updateLabels();};
+document.getElementById('intensityBtn').onclick=()=>{
+  tryEnableAudio();
+  const o=['normal','intense','super'];
+  intensityLevel=o[(o.indexOf(intensityLevel)+1)%3];
+  updateAtmosphere();
+  updateLabels();
+  // Force star refresh immediately
+  if (stars && starMat) {
+    const t = timeOfDay;
+    let dayFactor = 0;
+    if (t > 5.4 && t < 20.6) {
+      dayFactor = Math.sin(((t - 5.4) / 15.2) * Math.PI);
+      dayFactor = Math.pow(Math.max(0, dayFactor), 0.82);
+    }
+    if (currentWeather === 'clear' && dayFactor < 0.35) {
+      if (intensityLevel === 'super') { starMat.opacity = 1; starMat.size = 0.55; }
+      else if (intensityLevel === 'intense') { starMat.opacity = 0.9; starMat.size = 0.40; }
+      else { starMat.opacity = 0.7; starMat.size = 0.30; }
+    }
+  }
+};
 document.getElementById('speciesBtn').onclick=()=>{tryEnableAudio();const o=['maple','oak','birch','cherry'];currentSpecies=o[(o.indexOf(currentSpecies)+1)%4];document.getElementById('speciesBtn').textContent=SPECIES[currentSpecies].name;rebuildTree();updateLabels();};
 document.getElementById('speedBtn').onclick=()=>{speedMultiplier=speedMultiplier===1?2:1;const b=document.getElementById('speedBtn');if(speedMultiplier===2){b.classList.add('active');b.textContent='2× ON';}else{b.classList.remove('active');b.textContent='2×';}};
 document.getElementById('muteBtn').onclick=()=>{muted=!muted;document.getElementById('muteBtn').textContent=muted?'Unmute':'Mute';if(masterGain)masterGain.gain.value=muted?0:0.55;document.getElementById('status').textContent=muted?'Audio MUTED':'Audio ON';};
@@ -862,20 +968,30 @@ function animate(){
   tickParticles(snowSmallSys, windStrength*1.5, 0.9); // fine particles - more drift
   tickParticles(mistSys,0.35);
   leafMeshes.forEach(leaf=>{
+    // Sprout growth
+    if (leaf.userData.sprout !== undefined && leaf.userData.sprout < 1) {
+      leaf.userData.sprout = Math.min(1, leaf.userData.sprout + 0.006);
+      const s = leaf.userData.fullScale * leaf.userData.sprout;
+      leaf.scale.setScalar(s);
+    }
     const p=leaf.userData.phase,a=leaf.userData.amp*windStrength;
     const wx=Math.sin(t*1.5+p)*0.06*a, wz=Math.cos(t*1.15+p*0.8)*0.05*a, wy=Math.sin(t*2+p*1.3)*0.028*a;
-    leaf.position.x=leaf.userData.basePos.x+wx; leaf.position.y=leaf.userData.basePos.y+wy; leaf.position.z=leaf.userData.basePos.z+wz;
+    if (leaf.userData.basePos) {
+      leaf.position.x=leaf.userData.basePos.x+wx; leaf.position.y=leaf.userData.basePos.y+wy; leaf.position.z=leaf.userData.basePos.z+wz;
+    }
     leaf.rotation.z=wx*3.3; leaf.rotation.x=wy*4;
   });
   branchMeshes.forEach((b,i)=>{if(i>7)b.rotation.z=Math.sin(t*0.55+i*0.3)*0.015*windStrength;});
   waterMesh.position.y=0.03+Math.sin(t*0.65)*0.007;
   if(Math.random()<0.035)shedLeavesGradually();
+  if(Math.random()<0.04)regrowLeavesGradually();
+  if(Math.random()<0.01) updateLeafColors();
   // Slowly clean up ground leaves, especially in winter
   if (getSeason(day) === 'winter' && groundLeafMeshes.length > 2 && Math.random() < 0.02) {
     const old = groundLeafMeshes.shift();
     if (old) scene.remove(old);
   }
-  updateFalling(dt); updateShootingStars(dt); updateLabels();
+  updateFalling(dt); updateShootingStars(dt); updateTreeScale(); updateLabels();
   renderer.render(scene,camera);
 }
 window.addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
