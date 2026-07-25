@@ -101,9 +101,9 @@ function createNoiseBuffer(ctx, sec) {
 function initAudio(){
   if(audioCtx){if(audioCtx.state==='suspended')audioCtx.resume();return;}
   try{audioCtx=new(window.AudioContext||window.webkitAudioContext)();}catch(e){return;}
-  masterGain=audioCtx.createGain(); masterGain.gain.value=0.55; masterGain.connect(audioCtx.destination);
+  masterGain=audioCtx.createGain(); masterGain.gain.value=0.38; masterGain.connect(audioCtx.destination);
 
-  windGain=audioCtx.createGain(); windGain.gain.value=0.0001;
+  windGain=audioCtx.createGain(); windGain.gain.value=0.00001;
   windFilter=audioCtx.createBiquadFilter(); windFilter.type='lowpass'; windFilter.frequency.value=380;
   windGain.connect(windFilter); windFilter.connect(masterGain);
   const ws=audioCtx.createBufferSource(); ws.buffer=createNoiseBuffer(audioCtx,7); ws.loop=true; ws.connect(windGain); ws.start();
@@ -134,23 +134,41 @@ function playThunder(){
 
 function updateAudio(){
   if(!audioReady||muted||!audioCtx)return;
-  const im=intensityLevel==='light'?0.4:intensityLevel==='heavy'?1.5:1.0;
-  // Wind breathes – sometimes almost silent
-  const calmFactor = 0.5 + 0.5*Math.sin(performance.now()*0.00015);
-  let w = (0.025 + windStrength*0.13) * calmFactor;
-  if(currentWeather==='storm') w*=1.5;
-  windGain.gain.linearRampToValueAtTime(Math.max(0.008,w), audioCtx.currentTime+1.2);
-  windFilter.frequency.linearRampToValueAtTime(260+windStrength*450, audioCtx.currentTime+1.0);
+  const im = intensityMultiplier();
+  const now = audioCtx.currentTime;
 
-  if((currentWeather==='rain'||currentWeather==='storm') && weatherIntensity>0.12){
-    rainGain.gain.linearRampToValueAtTime(0.07+weatherIntensity*0.22*im, audioCtx.currentTime+0.8);
-  } else rainGain.gain.linearRampToValueAtTime(0.0001, audioCtx.currentTime+1.8);
+  // --- WIND: quiet base, occasional soft gusts, real silence ---
+  // Slow breathing so it isn't constant noise
+  const breath = 0.15 + 0.85 * Math.max(0, Math.sin(performance.now() * 0.00008));
+  // Random soft gusts
+  const gust = (Math.random() < 0.003) ? (0.4 + Math.random() * 0.5) : 0;
 
-  if(currentWeather==='snow' && weatherIntensity>0.12){
-    snowGain.gain.linearRampToValueAtTime(0.025+weatherIntensity*0.06*im, audioCtx.currentTime+1.0);
-  } else snowGain.gain.linearRampToValueAtTime(0.0001, audioCtx.currentTime+2.0);
+  let windVol = (0.012 + windStrength * 0.045) * breath + gust * 0.08;
+  if (currentWeather === 'storm') windVol *= 1.6;
+  if (currentWeather === 'clear' && Math.random() < 0.4) windVol *= 0.3; // often nearly silent on clear days
 
-  if(currentWeather==='storm' && Math.random()<0.0025*im) playThunder();
+  windGain.gain.linearRampToValueAtTime(Math.max(0.001, windVol), now + 1.8);
+  windFilter.frequency.linearRampToValueAtTime(180 + windStrength * 280, now + 1.5);
+
+  // --- RAIN: only when actually raining, much less static ---
+  if ((currentWeather === 'rain' || currentWeather === 'storm') && weatherIntensity > 0.12) {
+    const rainVol = 0.035 + weatherIntensity * 0.11 * im;
+    rainGain.gain.linearRampToValueAtTime(rainVol, now + 1.0);
+    rainFilter.frequency.linearRampToValueAtTime(900 + im * 400, now + 1.0);
+  } else {
+    rainGain.gain.linearRampToValueAtTime(0.0001, now + 2.5);
+  }
+
+  // --- SNOW: very quiet, almost just a soft hush ---
+  if (currentWeather === 'snow' && weatherIntensity > 0.12) {
+    const snowVol = 0.012 + weatherIntensity * 0.025 * im;
+    snowGain.gain.linearRampToValueAtTime(snowVol, now + 1.2);
+  } else {
+    snowGain.gain.linearRampToValueAtTime(0.0001, now + 2.5);
+  }
+
+  // Thunder only on real storms, less frequent
+  if (currentWeather === 'storm' && Math.random() < 0.0018 * im) playThunder();
 }
 
 function tryEnableAudio(){initAudio(); if(audioCtx?.state==='suspended') audioCtx.resume();}
@@ -169,7 +187,7 @@ container.appendChild(renderer.domElement);
 
 const controls=new OrbitControls(camera,renderer.domElement);
 controls.enableDamping=true; controls.dampingFactor=0.06;
-controls.minDistance=4.5; controls.maxDistance=42; controls.maxPolarAngle=Math.PI*0.47;
+controls.minDistance=5.0; controls.maxDistance=22; controls.maxPolarAngle=Math.PI*0.46;
 controls.minPolarAngle = 0.18;
 controls.enablePan = false;          // lock center – no sliding away from tree
 controls.target.set(0, 2.6, 0);      // aim at tree center
@@ -211,7 +229,7 @@ function createRingHills(){
   const group=new THREE.Group();
   for(let i=0;i<12;i++){
     const angle=i/12*Math.PI*2;
-    const dist=26+Math.random()*6;
+    const dist=32+Math.random()*8;
     const shape=new THREE.Shape();
     const w=7+Math.random()*5;
     shape.moveTo(-w,0);
@@ -250,7 +268,7 @@ function makeCloud(){
 for(let i=0;i<7;i++){
   const c = makeCloud();
   const a = (i / 7) * Math.PI * 2 + Math.random()*0.4;
-  const d = 22 + Math.random()*18;
+  const d = 28 + Math.random()*12;
   c.position.set(Math.cos(a)*d, 13 + Math.random()*5, Math.sin(a)*d);
   c.userData.baseY = c.position.y;
   c.visible = false;
@@ -423,8 +441,8 @@ function makeParticles(count,color,size,speedY,spread=36){
   const pts=new THREE.Points(geo,mat); pts.userData.vel=vel; pts.visible=false; scene.add(pts); return pts;
 }
 rainSys=makeParticles(1500,0xbcd6f5,0.048,-0.27);
-snowBigSys=makeParticles(650,0xffffff,0.15,-0.024,36);   // larger soft flakes
-snowSmallSys=makeParticles(3800,0xf8fafc,0.042,-0.07,46); // many fine drifting particles
+snowBigSys=makeParticles(900,0xffffff,0.14,-0.022,55);   // larger soft flakes – wide coverage
+snowSmallSys=makeParticles(5200,0xf8fafc,0.038,-0.065,62); // fine particles – full environment
 // Morning mist – very fine, dense, background only
 mistSys = makeParticles(4200, 0xdbeafe, 0.045, -0.004, 48);
 mistSys.material.opacity = 0.35;
@@ -497,11 +515,41 @@ function updateAtmosphere(){
   if(dayFactor<0.28)sky.lerp(new THREE.Color(0x0c1525),1-dayFactor*3.5);
   scene.background=sky; scene.fog.color.copy(sky);
 
-  let fogDensity=0.008;
-  if(t>4.6&&t<9.2){const m=1-Math.abs(t-6.6)/2.6; fogDensity+=Math.max(0,m)*0.03;}
-  if(currentWeather==='rain'||currentWeather==='storm')fogDensity+=0.006*im;
-  if(currentWeather==='snow')fogDensity+=0.007*im;
-  scene.fog.density=fogDensity;
+  // Fog – living waves (especially for snow)
+  // Base + morning
+  let fogDensity = 0.007;
+  if (t > 4.6 && t < 9.0) {
+    const m = 1 - Math.abs(t - 6.6) / 2.5;
+    fogDensity += Math.max(0, m) * 0.022;
+  }
+
+  if (currentWeather === 'snow') {
+    // Wave system: multiple overlapping slow waves so density rises and falls
+    const time = performance.now() * 0.001;
+    const wave1 = 0.5 + 0.5 * Math.sin(time * 0.15);           // slow big wave
+    const wave2 = 0.5 + 0.5 * Math.sin(time * 0.33 + 1.7);      // medium wave
+    const wave3 = 0.5 + 0.5 * Math.sin(time * 0.07 + 4.2);      // very slow drift
+    const wave = (wave1 * 0.5 + wave2 * 0.3 + wave3 * 0.2);
+
+    // Base snow fog by intensity
+    let base = 0.018;
+    let amplitude = 0.012;   // how much the wave swings
+    if (intensityLevel === 'intense') { base = 0.038; amplitude = 0.028; }
+    if (intensityLevel === 'super')   { base = 0.055; amplitude = 0.045; }
+
+    // Wave moves between residual haze and dense pockets
+    // Never fully clears – always some residual fog (the "snow itself")
+    fogDensity += base + amplitude * wave;
+  } else if (currentWeather === 'rain') {
+    fogDensity += 0.006 * im;
+  } else if (currentWeather === 'storm') {
+    // Storms also get a lighter wave
+    const time = performance.now() * 0.001;
+    const wave = 0.5 + 0.5 * Math.sin(time * 0.22);
+    fogDensity += 0.009 * im + 0.008 * wave;
+  }
+
+  scene.fog.density = fogDensity;
 
   // Weather – mutually exclusive + winter never rains
   if (getSeason(day) === 'winter' && (dayWeatherType === 'rain' || dayWeatherType === 'storm')) {
@@ -531,14 +579,26 @@ function updateAtmosphere(){
     mistSys.material.opacity = 0.22 * mistFade;
   }
 
-  // Clouds only when raining or snowing (pure background)
+  // Clouds only with rain/snow – density follows intensity
   const showClouds = (currentWeather === 'rain' || currentWeather === 'storm' || currentWeather === 'snow');
-  cloudGroup.children.forEach((c,i)=>{
-    c.visible = showClouds;
-    if(showClouds){
+  const totalClouds = cloudGroup.children.length;
+  // How many clouds to show
+  let cloudCount = 0;
+  if (showClouds) {
+    if (intensityLevel === 'normal') cloudCount = Math.floor(totalClouds * 0.35);
+    else if (intensityLevel === 'intense') cloudCount = Math.floor(totalClouds * 0.7);
+    else cloudCount = totalClouds; // super / thunderstorm / blizzard = all clouds
+    if (currentWeather === 'storm') cloudCount = totalClouds; // always max on storm
+  }
+  cloudGroup.children.forEach((c, i) => {
+    c.visible = showClouds && i < cloudCount;
+    if (c.visible) {
       c.position.y = c.userData.baseY + Math.sin(performance.now()*0.00025 + i)*0.35;
-      c.traverse(m=>{
-        if(m.material) m.material.opacity = currentWeather === 'storm' ? 0.58 : 0.38;
+      c.traverse(m => {
+        if (m.material) {
+          m.material.opacity = currentWeather === 'storm' ? 0.62 :
+                               intensityLevel === 'super' ? 0.52 : 0.36;
+        }
       });
     }
   });
