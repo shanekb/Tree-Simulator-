@@ -719,40 +719,36 @@ function updateAtmosphere(){
   const sky=new THREE.Color().copy(new THREE.Color(colors.skyDay));
   if(dawnDusk>0.08)sky.lerp(new THREE.Color(colors.skyDawn),Math.min(1,dawnDusk));
   if(dayFactor<0.28)sky.lerp(new THREE.Color(0x0c1525),1-dayFactor*3.5);
+  // Rain / thunderstorm: overcast gray-white nimbus sky (not snow white-out)
+  if (currentWeather === 'rain') {
+    const overcast = intensityLevel === 'super' ? 0.75 : intensityLevel === 'intense' ? 0.55 : 0.35;
+    sky.lerp(new THREE.Color(0x9ca3af), overcast); // soft gray
+  } else if (currentWeather === 'storm') {
+    sky.lerp(new THREE.Color(0x6b7280), 0.7); // darker storm gray
+  }
   scene.background=sky; scene.fog.color.copy(sky);
 
-  // Fog – living waves (especially for snow)
-  // Base + morning
-  let fogDensity = 0.007;
+  // Fog – heavy wave fog ONLY for snow. Rain gets light haze + gray sky instead.
+  let fogDensity = 0.006;
   if (t > 4.6 && t < 9.0) {
     const m = 1 - Math.abs(t - 6.6) / 2.5;
-    fogDensity += Math.max(0, m) * 0.022;
+    fogDensity += Math.max(0, m) * 0.02;
   }
 
   if (currentWeather === 'snow') {
-    // Wave system: multiple overlapping slow waves so density rises and falls
+    // Living wave fog – snow only
     const time = performance.now() * 0.001;
-    const wave1 = 0.5 + 0.5 * Math.sin(time * 0.15);           // slow big wave
-    const wave2 = 0.5 + 0.5 * Math.sin(time * 0.33 + 1.7);      // medium wave
-    const wave3 = 0.5 + 0.5 * Math.sin(time * 0.07 + 4.2);      // very slow drift
+    const wave1 = 0.5 + 0.5 * Math.sin(time * 0.15);
+    const wave2 = 0.5 + 0.5 * Math.sin(time * 0.33 + 1.7);
+    const wave3 = 0.5 + 0.5 * Math.sin(time * 0.07 + 4.2);
     const wave = (wave1 * 0.5 + wave2 * 0.3 + wave3 * 0.2);
-
-    // Base snow fog by intensity
-    let base = 0.018;
-    let amplitude = 0.012;   // how much the wave swings
+    let base = 0.018, amplitude = 0.012;
     if (intensityLevel === 'intense') { base = 0.038; amplitude = 0.028; }
     if (intensityLevel === 'super')   { base = 0.055; amplitude = 0.045; }
-
-    // Wave moves between residual haze and dense pockets
-    // Never fully clears – always some residual fog (the "snow itself")
     fogDensity += base + amplitude * wave;
-  } else if (currentWeather === 'rain') {
-    fogDensity += 0.006 * im;
-  } else if (currentWeather === 'storm') {
-    // Storms also get a lighter wave
-    const time = performance.now() * 0.001;
-    const wave = 0.5 + 0.5 * Math.sin(time * 0.22);
-    fogDensity += 0.009 * im + 0.008 * wave;
+  } else if (currentWeather === 'rain' || currentWeather === 'storm') {
+    // Light atmospheric haze only – no white-out
+    fogDensity += 0.004 + 0.003 * im;
   }
 
   scene.fog.density = fogDensity;
@@ -802,8 +798,17 @@ function updateAtmosphere(){
       c.position.y = c.userData.baseY + Math.sin(performance.now()*0.00025 + i)*0.35;
       c.traverse(m => {
         if (m.material) {
-          m.material.opacity = currentWeather === 'storm' ? 0.62 :
-                               intensityLevel === 'super' ? 0.52 : 0.36;
+          if (currentWeather === 'storm') {
+            m.material.color.setHex(0x6b7280); // dark nimbus
+            m.material.opacity = 0.72;
+          } else if (currentWeather === 'rain') {
+            m.material.color.setHex(0x9ca3af); // light gray fluffy
+            m.material.opacity = intensityLevel === 'super' ? 0.65 :
+                                 intensityLevel === 'intense' ? 0.5 : 0.38;
+          } else if (currentWeather === 'snow') {
+            m.material.color.setHex(0xe2e8f0);
+            m.material.opacity = intensityLevel === 'super' ? 0.55 : 0.4;
+          }
         }
       });
     }
