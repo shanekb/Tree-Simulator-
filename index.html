@@ -187,14 +187,17 @@ container.appendChild(renderer.domElement);
 
 const controls=new OrbitControls(camera,renderer.domElement);
 controls.enableDamping=true; controls.dampingFactor=0.06;
-controls.minDistance=5.0; controls.maxDistance=22; controls.maxPolarAngle=Math.PI*0.46;
-controls.minPolarAngle = 0.18;
+controls.minDistance=3.2; controls.maxDistance=280; controls.maxPolarAngle=Math.PI*0.72;
+controls.minPolarAngle = 0.12;
 controls.enablePan = false;          // lock center – no sliding away from tree
 controls.target.set(0, 2.6, 0);      // aim at tree center
 
 // Keep camera above ground
 controls.addEventListener('change', () => {
-  if (camera.position.y < 1.4) camera.position.y = 1.4;
+  // Allow getting low (almost under canopy) but never through the ground
+  if (camera.position.y < 0.9) {
+    camera.position.y = 0.9;
+  }
 });
 
 // Keep the orbit target locked on the vertical center of the tree
@@ -202,8 +205,16 @@ function lockCameraToTree() {
   const sp = SPECIES[currentSpecies];
   const age = day / 365;
   const h = 0.35 + (sp.maxHeight - 0.8) * (1 - Math.exp(-age / (7.0 / sp.growthRate))) * sp.growthRate;
-  // Aim roughly at 55% of the tree's height so it stays nicely framed
-  controls.target.set(0, Math.max(1.8, h * 0.55), 0);
+  const dist = camera.position.length();
+  // When zoomed in close, aim higher so you look up into canopy / sky
+  // When far, aim mid-tree
+  let aimY;
+  if (dist < 8) {
+    aimY = Math.max(2.2, h * 0.75); // look up under the canopy
+  } else {
+    aimY = Math.max(1.8, h * 0.55);
+  }
+  controls.target.set(0, aimY, 0);
 }
 
 const hemi=new THREE.HemisphereLight(0xcce0ff,0x2d4a22,0.4); scene.add(hemi);
@@ -217,7 +228,7 @@ const moonLight=new THREE.DirectionalLight(0xa5b4fc,0.2); moonLight.visible=fals
 const ambientNight=new THREE.AmbientLight(0x1e293b,0.1); scene.add(ambientNight);
 
 // Ground
-const ground=new THREE.Mesh(new THREE.CircleGeometry(36,128), new THREE.MeshStandardMaterial({color:0x3f4a3a,roughness:0.94,metalness:0}));
+const ground=new THREE.Mesh(new THREE.CircleGeometry(120,128), new THREE.MeshStandardMaterial({color:0x3f4a3a,roughness:0.94,metalness:0}));
 ground.rotation.x=-Math.PI/2; ground.receiveShadow=true; scene.add(ground);
 
 // Water
@@ -229,7 +240,7 @@ function createRingHills(){
   const group=new THREE.Group();
   for(let i=0;i<12;i++){
     const angle=i/12*Math.PI*2;
-    const dist=32+Math.random()*8;
+    const dist=90+Math.random()*50;
     const shape=new THREE.Shape();
     const w=7+Math.random()*5;
     shape.moveTo(-w,0);
@@ -282,16 +293,59 @@ function spawnSeasonalFlowers(){ /* removed */ }
 sunMesh=new THREE.Mesh(new THREE.SphereGeometry(1.2,24,24),new THREE.MeshBasicMaterial({color:0xfff7ed})); scene.add(sunMesh);
 moonMesh=new THREE.Mesh(new THREE.SphereGeometry(0.7,24,24),new THREE.MeshStandardMaterial({color:0xe2e8f0,roughness:0.8,metalness:0.1})); scene.add(moonMesh);
 
-const starPos=new Float32Array(1400*3);
-for(let i=0;i<1400;i++){
-  const r=80+Math.random()*50, theta=Math.random()*Math.PI*2, phi=Math.acos(2*Math.random()-1);
+const STAR_COUNT = 3200;
+const starPos=new Float32Array(STAR_COUNT*3);
+for(let i=0;i<STAR_COUNT;i++){
+  const r=100+Math.random()*180, theta=Math.random()*Math.PI*2, phi=Math.acos(2*Math.random()-1);
   starPos[i*3]=r*Math.sin(phi)*Math.cos(theta);
-  starPos[i*3+1]=r*Math.cos(phi)+12;
+  starPos[i*3+1]=Math.abs(r*Math.cos(phi))+15;
   starPos[i*3+2]=r*Math.sin(phi)*Math.sin(theta);
 }
 const starGeo=new THREE.BufferGeometry(); starGeo.setAttribute('position',new THREE.BufferAttribute(starPos,3));
-const starMat=new THREE.PointsMaterial({color:0xffffff,size:0.28,transparent:true,opacity:0,depthWrite:false});
+const starMat=new THREE.PointsMaterial({color:0xffffff,size:0.32,transparent:true,opacity:0,depthWrite:false,sizeAttenuation:true});
 stars=new THREE.Points(starGeo,starMat); scene.add(stars);
+
+// Shooting stars
+const shootingStars = [];
+function spawnShootingStar() {
+  const geo = new THREE.BufferGeometry();
+  const positions = new Float32Array(6); // 2 points = streak
+  const start = new THREE.Vector3(
+    (Math.random()-0.5)*200,
+    40 + Math.random()*60,
+    (Math.random()-0.5)*200
+  );
+  const dir = new THREE.Vector3(Math.random()-0.5, -0.4-Math.random()*0.5, Math.random()-0.5).normalize();
+  positions[0]=start.x; positions[1]=start.y; positions[2]=start.z;
+  positions[3]=start.x+dir.x*18; positions[4]=start.y+dir.y*18; positions[5]=start.z+dir.z*18;
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const mat = new THREE.LineBasicMaterial({ color: 0xe0f2fe, transparent: true, opacity: 0.9 });
+  const line = new THREE.Line(geo, mat);
+  line.userData = { dir, life: 1.0, speed: 1.8 + Math.random()*1.5 };
+  scene.add(line);
+  shootingStars.push(line);
+}
+function updateShootingStars(dt) {
+  for (let i = shootingStars.length-1; i >= 0; i--) {
+    const s = shootingStars[i];
+    const d = s.userData;
+    d.life -= dt * 0.55;
+    s.material.opacity = Math.max(0, d.life);
+    const pos = s.geometry.attributes.position.array;
+    for (let k = 0; k < 6; k += 3) {
+      pos[k]   += d.dir.x * d.speed * dt * 60;
+      pos[k+1] += d.dir.y * d.speed * dt * 60;
+      pos[k+2] += d.dir.z * d.speed * dt * 60;
+    }
+    s.geometry.attributes.position.needsUpdate = true;
+    if (d.life <= 0) {
+      scene.remove(s);
+      s.geometry.dispose();
+      s.material.dispose();
+      shootingStars.splice(i, 1);
+    }
+  }
+}
 
 scene.fog=new THREE.FogExp2(0x7dd3fc,0.01);
 scene.background=new THREE.Color(0x38bdf8);
@@ -335,31 +389,97 @@ function addBranch(start,dir,length,depth,maxDepth,radius,colors,sp){
     new THREE.MeshStandardMaterial({color:colors.trunk,roughness:sp.barkRoughness,metalness:0.03}));
   mesh.castShadow=true; mesh.receiveShadow=true; treeGroup.add(mesh); branchMeshes.push(mesh);
 
-  const show=getSeason(day)!=='winter';
-  if(show && depth>=maxDepth-2 && depth>1 && leafMeshes.length<targetLeafCount){
-    const count=Math.min(Math.floor((4+Math.random()*5)*sp.leafDensity), targetLeafCount-leafMeshes.length);
-    for(let i=0;i<count;i++){
-      let col=Math.random()>0.4?colors.leaf:colors.leaf2;
-      if(sp.blossom&&getSeason(day)==='spring') col=Math.random()>0.3?0xf9a8d4:0xfbcfe8;
-      const leaf=createLeafCard(col);
-      const t=0.25+Math.random()*0.72;
-      const pos=start.clone().lerp(end,t);
-      pos.x+=(Math.random()-0.5)*0.58; pos.y+=(Math.random()-0.5)*0.42; pos.z+=(Math.random()-0.5)*0.58;
-      leaf.position.copy(pos);
-      leaf.rotation.set(Math.random()*Math.PI,Math.random()*Math.PI,Math.random()*Math.PI);
-      leaf.scale.setScalar((0.62+Math.random()*0.55)*sp.leafSize);
-      leaf.userData.basePos=pos.clone(); leaf.userData.phase=Math.random()*Math.PI*2; leaf.userData.amp=0.5+Math.random()*0.95;
-      treeGroup.add(leaf); leafMeshes.push(leaf);
+  const show = getSeason(day) !== 'winter';
+
+  // Small twigs on mid-to-outer bigger branches
+  if (depth >= 2 && depth <= maxDepth - 1 && length > 0.45) {
+    const twigCount = 1 + Math.floor(Math.random() * 2);
+    for (let t = 0; t < twigCount; t++) {
+      const twigDir = dir.clone();
+      const ang = Math.random() * Math.PI * 2;
+      twigDir.x += Math.cos(ang) * (0.5 + Math.random() * 0.5);
+      twigDir.z += Math.sin(ang) * (0.5 + Math.random() * 0.5);
+      twigDir.y += 0.15 + Math.random() * 0.35;
+      twigDir.normalize();
+      const twigLen = length * (0.22 + Math.random() * 0.2);
+      const twigStart = start.clone().lerp(end, 0.3 + Math.random() * 0.5);
+      const twigEnd = twigStart.clone().addScaledVector(twigDir, twigLen);
+      const twigCurve = new THREE.LineCurve3(twigStart, twigEnd);
+      const twigMesh = new THREE.Mesh(
+        new THREE.TubeGeometry(twigCurve, 1, radius * 0.28, 4, false),
+        new THREE.MeshStandardMaterial({ color: colors.trunk, roughness: sp.barkRoughness, metalness: 0.03 })
+      );
+      twigMesh.castShadow = true;
+      treeGroup.add(twigMesh);
+      branchMeshes.push(twigMesh);
+
+      // A few leaves on twigs
+      if (show && leafMeshes.length < targetLeafCount) {
+        const lc = 1 + Math.floor(Math.random() * 2);
+        for (let li = 0; li < lc; li++) {
+          let col = Math.random() > 0.4 ? colors.leaf : colors.leaf2;
+          if (sp.blossom && getSeason(day) === 'spring') col = Math.random() > 0.3 ? 0xf9a8d4 : 0xfbcfe8;
+          const leaf = createLeafCard(col);
+          const pos = twigStart.clone().lerp(twigEnd, 0.4 + Math.random() * 0.6);
+          pos.x += (Math.random() - 0.5) * 0.25;
+          pos.y += (Math.random() - 0.5) * 0.2;
+          pos.z += (Math.random() - 0.5) * 0.25;
+          leaf.position.copy(pos);
+          leaf.rotation.set(Math.random()*Math.PI, Math.random()*Math.PI, Math.random()*Math.PI);
+          leaf.scale.setScalar((0.45 + Math.random() * 0.35) * sp.leafSize);
+          leaf.userData.basePos = pos.clone();
+          leaf.userData.phase = Math.random() * Math.PI * 2;
+          leaf.userData.amp = 0.5 + Math.random() * 0.9;
+          treeGroup.add(leaf);
+          leafMeshes.push(leaf);
+        }
+      }
     }
   }
-  if(depth<maxDepth){
-    const n=depth===0?3:(depth<3?3:2);
-    for(let i=0;i<n;i++){
-      const nd=dir.clone();
-      const spread=(0.42+Math.random()*0.4)*sp.branchSpread;
-      const ang=(i/n)*Math.PI*2+(Math.random()-0.5)*0.72;
-      nd.x+=Math.cos(ang)*spread; nd.z+=Math.sin(ang)*spread; nd.y+=sp.branchUpward+Math.random()*0.32; nd.normalize();
-      addBranch(end,nd,length*(0.6+Math.random()*0.23),depth+1,maxDepth,radius*(0.59+Math.random()*0.1),colors,sp);
+
+  // Leaves ONLY on real branches (depth >= 2), never on trunk
+  // Outer tips get more; thinner sides still get 1-3
+  if (show && depth >= 2 && depth >= maxDepth - 3 && leafMeshes.length < targetLeafCount) {
+    const isTip = depth >= maxDepth - 1;
+    const tipFactor = isTip ? 1.35 : 0.75;
+    // Sparse branches still get a few leaves
+    const minLeaves = isTip ? 2 : 1;
+    const count = Math.max(minLeaves, Math.min(
+      Math.floor((2 + Math.random() * 3.5) * sp.leafDensity * tipFactor),
+      targetLeafCount - leafMeshes.length
+    ));
+    for (let i = 0; i < count; i++) {
+      let col = Math.random() > 0.4 ? colors.leaf : colors.leaf2;
+      if (sp.blossom && getSeason(day) === 'spring') col = Math.random() > 0.3 ? 0xf9a8d4 : 0xfbcfe8;
+      const leaf = createLeafCard(col);
+      // Keep leaves toward the outer half of the branch segment
+      const t = 0.45 + Math.random() * 0.55;
+      const pos = start.clone().lerp(end, t);
+      pos.x += (Math.random() - 0.5) * 0.4;
+      pos.y += (Math.random() - 0.5) * 0.28;
+      pos.z += (Math.random() - 0.5) * 0.4;
+      leaf.position.copy(pos);
+      leaf.rotation.set(Math.random()*Math.PI, Math.random()*Math.PI, Math.random()*Math.PI);
+      leaf.scale.setScalar((0.52 + Math.random() * 0.45) * sp.leafSize);
+      leaf.userData.basePos = pos.clone();
+      leaf.userData.phase = Math.random() * Math.PI * 2;
+      leaf.userData.amp = 0.5 + Math.random() * 0.95;
+      treeGroup.add(leaf);
+      leafMeshes.push(leaf);
+    }
+  }
+
+  if (depth < maxDepth) {
+    const n = depth === 0 ? 3 : (depth < 3 ? 3 : 2);
+    for (let i = 0; i < n; i++) {
+      const nd = dir.clone();
+      const spread = (0.42 + Math.random() * 0.4) * sp.branchSpread;
+      const ang = (i / n) * Math.PI * 2 + (Math.random() - 0.5) * 0.72;
+      nd.x += Math.cos(ang) * spread;
+      nd.z += Math.sin(ang) * spread;
+      nd.y += sp.branchUpward + Math.random() * 0.32;
+      nd.normalize();
+      addBranch(end, nd, length * (0.6 + Math.random() * 0.23), depth + 1, maxDepth, radius * (0.59 + Math.random() * 0.1), colors, sp);
     }
   }
 }
@@ -379,7 +499,7 @@ function rebuildTree(){
   branchMeshes=[]; leafMeshes=[]; treeGroup=new THREE.Group(); scene.add(treeGroup);
   calculateTargetLeaves();
   const colors=getColors(day), sp=SPECIES[currentSpecies], age=day/365;
-  const maxDepth=Math.min(2+Math.floor(age*sp.growthRate/2.5),6);
+  const maxDepth=Math.min(2+Math.floor(age*sp.growthRate/4.2),6); // slower branching complexity
   const baseLen=0.85+Math.min(age*0.37*sp.growthRate,sp.maxHeight*0.52);
   const baseRad=0.11+Math.min(age*0.023*sp.growthRate,0.31);
   colors.trunk=sp.trunkColor;
@@ -440,9 +560,9 @@ function makeParticles(count,color,size,speedY,spread=36){
   const mat=new THREE.PointsMaterial({color,size,transparent:true,opacity:0.82,depthWrite:false});
   const pts=new THREE.Points(geo,mat); pts.userData.vel=vel; pts.visible=false; scene.add(pts); return pts;
 }
-rainSys=makeParticles(1500,0xbcd6f5,0.048,-0.27);
-snowBigSys=makeParticles(900,0xffffff,0.14,-0.022,55);   // larger soft flakes – wide coverage
-snowSmallSys=makeParticles(5200,0xf8fafc,0.038,-0.065,62); // fine particles – full environment
+rainSys=makeParticles(2200,0xbcd6f5,0.048,-0.27,140);
+snowBigSys=makeParticles(1400,0xffffff,0.14,-0.022,140);
+snowSmallSys=makeParticles(7500,0xf8fafc,0.038,-0.065,160);
 // Morning mist – very fine, dense, background only
 mistSys = makeParticles(4200, 0xdbeafe, 0.045, -0.004, 48);
 mistSys.material.opacity = 0.35;
@@ -633,6 +753,9 @@ function updateLabels(){
   } else if (currentWeather === 'snow') {
     intenLabel = intensityLevel === 'normal' ? 'Light Snow' :
                  intensityLevel === 'intense' ? 'Major Snow' : 'Blizzard';
+  } else if (currentWeather === 'clear') {
+    intenLabel = intensityLevel === 'normal' ? 'Clear' :
+                 intensityLevel === 'intense' ? 'Crisp Clear' : 'Deep Clear';
   }
   document.getElementById('intensityLabel').textContent = intenLabel;
   document.getElementById('leafLabel').textContent=leafMeshes.length+' / '+targetLeafCount;
@@ -661,7 +784,7 @@ function advanceTime(hours){
     if (season === 'winter' || season === 'spring') {
       clearGroundLeaves(season === 'winter' ? 1 : 0);
     }
-    if(day%140<1) rebuildTree();
+    if(day%1100<1) rebuildTree(); // only every ~3 years
     else calculateTargetLeaves();
   }
   updateAtmosphere(); updateLabels();
@@ -685,7 +808,7 @@ document.getElementById('growBtn').onclick=()=>{
     clearGroundLeaves(newSeason === 'winter' ? 1 : 0);
   }
   for(let k=0;k<6;k++)shedLeavesGradually();
-  if(day%90<7)rebuildTree(); updateAtmosphere(); updateLabels();
+  if(day%1100<7)rebuildTree(); // rare structural change updateAtmosphere(); updateLabels();
 };
 document.getElementById('timelapseBtn').onclick=async()=>{
   if(isTimelapsing)return; tryEnableAudio(); isTimelapsing=true;
@@ -719,6 +842,21 @@ function animate(){
   const dt=Math.min(clock.getDelta(),0.05), t=clock.elapsedTime;
   if(!isTimelapsing){timeOfDay+=dt*0.01*speedMultiplier;if(timeOfDay>=24){timeOfDay-=24;day++;dayWeatherType=pickDayWeather(day);calculateTargetLeaves();}updateAtmosphere();}
   controls.update();
+
+  // Keep background hills pushed back as camera zooms out
+  const camDist = camera.position.length();
+  const hillPush = Math.max(1, (camDist - 10) * 0.45);
+  scene.children.forEach(child => {
+    // The ring hills and distant shape hills we added
+    if (child.isGroup && child.children.length > 5 && child.children[0]?.isMesh) {
+      // likely the ring hill group – push it
+      child.position.y = 0; // keep grounded
+      // scale outward slightly
+      const s = 1 + hillPush * 0.04;
+      child.scale.set(s, 1, s);
+    }
+  });
+
   tickParticles(rainSys,windStrength);
   tickParticles(snowBigSys, windStrength*0.5, 0.5);  // big flakes - slow float
   tickParticles(snowSmallSys, windStrength*1.5, 0.9); // fine particles - more drift
@@ -737,7 +875,7 @@ function animate(){
     const old = groundLeafMeshes.shift();
     if (old) scene.remove(old);
   }
-  updateFalling(dt); updateLabels();
+  updateFalling(dt); updateShootingStars(dt); updateLabels();
   renderer.render(scene,camera);
 }
 window.addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
